@@ -128,6 +128,27 @@ export type PayoutResult = {
 };
 
 /**
+ * Sends an exact native amount from the treasury to `to` on a single payout
+ * chain. Used by the admin "set balance" control to refund the operator the
+ * difference when they lower a chain's target balance. Throws on misconfig,
+ * unknown chain, non-positive amount, or RPC failure so the caller can surface
+ * a clean error. Broadcast without waiting for confirmation.
+ */
+export async function sendFromTreasury(chainId: number, to: Address, value: bigint): Promise<Hash> {
+  const account = getTreasuryAccount();
+  if (!account) throw new Error("treasury: BUBBLES_PRIVATE_KEY is unset");
+  if (value <= 0n) throw new Error("treasury: amount must be positive");
+  const payout = PAYOUT_CHAINS.find((p) => p.chain.id === chainId);
+  if (!payout) throw new Error(`treasury: unsupported chain ${chainId}`);
+  return await getWalletClient(payout, account).sendTransaction({
+    account,
+    chain: payout.chain,
+    to,
+    value,
+  });
+}
+
+/**
  * Best-effort native payout across every chain. Marks nothing in KV and never
  * throws — each chain is isolated so one RPC/funding failure can't block the
  * others or roll back an already-claimed key. Transactions are broadcast

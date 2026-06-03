@@ -21,6 +21,7 @@
     "npm:@react-router/dev@^7.9.5": "7.15.1_react-router@7.15.1__react@19.2.6__react-dom@19.2.6___react@19.2.6_typescript@5.9.3_vite@7.3.3__@types+node@24.12.4_@types+node@24.12.4_react@19.2.6_react-dom@19.2.6__react@19.2.6",
     "npm:@react-router/fs-routes@^7.9.5": "7.15.1_@react-router+dev@7.15.1__react-router@7.15.1___react@19.2.6___react-dom@19.2.6____react@19.2.6__typescript@5.9.3__vite@7.3.3___@types+node@24.12.4__@types+node@24.12.4__react@19.2.6__react-dom@19.2.6___react@19.2.6_typescript@5.9.3_@types+node@24.12.4_react@19.2.6_react-dom@19.2.6__react@19.2.6_react-router@7.15.1__react@19.2.6__react-dom@19.2.6___react@19.2.6_vite@7.3.3__@types+node@24.12.4",
     "npm:@tailwindcss/vite@^4.1.16": "4.3.0_vite@7.3.3__@types+node@24.12.4_@types+node@24.12.4",
+    "npm:@tanstack/react-query@5.90.6": "5.90.6_react@19.2.6",
     "npm:@types/node@^24.10.0": "24.12.4",
     "npm:@types/react-dom@^19.2.2": "19.2.3_@types+react@19.2.15",
     "npm:@types/react@^19.2.2": "19.2.15",
@@ -38,7 +39,8 @@
     "npm:typescript@^5.9.3": "5.9.3",
     "npm:viem@2.48.4": "2.48.4_typescript@5.9.3",
     "npm:vite-tsconfig-paths@^5.1.4": "5.1.4_vite@7.3.3__@types+node@24.12.4_@types+node@24.12.4_typescript@5.9.3",
-    "npm:vite@^7.1.12": "7.3.3_@types+node@24.12.4"
+    "npm:vite@^7.1.12": "7.3.3_@types+node@24.12.4",
+    "npm:wagmi@^3.6.4": "3.6.16_@tanstack+react-query@5.90.6__react@19.2.6_react@19.2.6_typescript@5.9.3_viem@2.48.4__typescript@5.9.3_@types+react@19.2.15"
   },
   "jsr": {
     "@std/cli@1.0.28": {
@@ -1070,6 +1072,16 @@
         "vite"
       ]
     },
+    "@tanstack/query-core@5.90.6": {
+      "integrity": "sha512-AnZSLF26R8uX+tqb/ivdrwbVdGemdEDm1Q19qM6pry6eOZ6bEYiY7mWhzXT1YDIPTNEVcZ5kYP9nWjoxDLiIVw=="
+    },
+    "@tanstack/react-query@5.90.6_react@19.2.6": {
+      "integrity": "sha512-gB1sljYjcobZKxjPbKSa31FUTyr+ROaBdoH+wSSs9Dk+yDCmMs+TkTV3PybRRVLC7ax7q0erJ9LvRWnMktnRAw==",
+      "dependencies": [
+        "@tanstack/query-core",
+        "react"
+      ]
+    },
     "@types/estree@1.0.8": {
       "integrity": "sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w=="
     },
@@ -1089,6 +1101,30 @@
       "integrity": "sha512-eRwcGNHve+E8qtEQSSRl6urh+rFop4v8gm6O8rGv25CodbvFdLjA1vVQ1KkiFE0w0UPOnb8tDiFKL5lp0rtY5Q==",
       "dependencies": [
         "csstype"
+      ]
+    },
+    "@wagmi/connectors@8.0.15_@wagmi+core@3.5.0__typescript@5.9.3__viem@2.48.4___typescript@5.9.3__@types+react@19.2.15__react@19.2.6__use-sync-external-store@1.4.0___react@19.2.6_typescript@5.9.3_viem@2.48.4__typescript@5.9.3_@types+react@19.2.15_react@19.2.6_use-sync-external-store@1.4.0__react@19.2.6": {
+      "integrity": "sha512-LNr73YNs2KY6y6GXUWRXsDG0xSB5YpkO/9BSp3/2IAcM5XDPWcS4V1HfstXnP/ms9LARKLe2BAOCG44LajTWjw==",
+      "dependencies": [
+        "@wagmi/core",
+        "typescript",
+        "viem"
+      ],
+      "optionalPeers": [
+        "typescript"
+      ]
+    },
+    "@wagmi/core@3.5.0_typescript@5.9.3_viem@2.48.4__typescript@5.9.3_@types+react@19.2.15_react@19.2.6_use-sync-external-store@1.4.0__react@19.2.6": {
+      "integrity": "sha512-OcbdnZA6XPyDOHtY6GR8MFzRa89/EkMFCxdrWV4cgKjfsLi02NzEbMG6LQEO7VJ9ltwmLwpRQgcWnn6pBJPo7Q==",
+      "dependencies": [
+        "eventemitter3",
+        "mipd",
+        "typescript",
+        "viem",
+        "zustand"
+      ],
+      "optionalPeers": [
+        "typescript"
       ]
     },
     "abitype@1.2.3_typescript@5.9.3": {
@@ -1399,6 +1435,15 @@
         "brace-expansion"
       ]
     },
+    "mipd@0.0.7_typescript@5.9.3": {
+      "integrity": "sha512-aAPZPNDQ3uMTdKbuO2YmAw2TxLHO0moa4YKAyETM/DTj5FloZo+a+8tU+iv4GmW+sOxKLSRwcSFuczk+Cpt6fg==",
+      "dependencies": [
+        "typescript"
+      ],
+      "optionalPeers": [
+        "typescript"
+      ]
+    },
     "ms@2.1.3": {
       "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA=="
     },
@@ -1651,6 +1696,12 @@
         "@types/react"
       ]
     },
+    "use-sync-external-store@1.4.0_react@19.2.6": {
+      "integrity": "sha512-9WXSPC5fMv61vaupRkCKCxsPxBocVnwakBEkMIHHpkTTg6icbJtg6jzgtLDm4bl3cSHAca52rYWih0k4K3PfHw==",
+      "dependencies": [
+        "react"
+      ]
+    },
     "valibot@1.4.1_typescript@5.9.3": {
       "integrity": "sha512-klCmFTz2jeDluy9RwX+F884TCiogtdBJ/YaxSx1EOBYXa3NXNWj8kR1jjN8rzluwojJVWWaHJ4r1U5LfICnM3g==",
       "dependencies": [
@@ -1719,11 +1770,39 @@
       ],
       "bin": true
     },
+    "wagmi@3.6.16_@tanstack+react-query@5.90.6__react@19.2.6_react@19.2.6_typescript@5.9.3_viem@2.48.4__typescript@5.9.3_@types+react@19.2.15": {
+      "integrity": "sha512-tM6/81vwmiNrJneApCL+qJdQoAyn2Fyd6bL88dC8A0Zp13MVeK7/cp1wzia5AoY0yqJRQHjEGk2Zzqrkdht/kA==",
+      "dependencies": [
+        "@tanstack/react-query",
+        "@wagmi/connectors",
+        "@wagmi/core",
+        "react",
+        "typescript",
+        "use-sync-external-store",
+        "viem"
+      ],
+      "optionalPeers": [
+        "typescript"
+      ]
+    },
     "ws@8.18.3": {
       "integrity": "sha512-PEIGCY5tSlUt50cqyMXfCzX+oOPqN0vuGqWzbcJ2xvnkzkq46oOpz7dQaTDBdfICb4N14+GARUDw2XV2N4tvzg=="
     },
     "yallist@3.1.1": {
       "integrity": "sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g=="
+    },
+    "zustand@5.0.0_@types+react@19.2.15_react@19.2.6_use-sync-external-store@1.4.0__react@19.2.6": {
+      "integrity": "sha512-LE+VcmbartOPM+auOjCCLQOsQ05zUTp8RkgwRzefUk+2jISdMMFnxvyTjA4YNWr5ZGXYbVsEMZosttuxUBkojQ==",
+      "dependencies": [
+        "@types/react",
+        "react",
+        "use-sync-external-store"
+      ],
+      "optionalPeers": [
+        "@types/react",
+        "react",
+        "use-sync-external-store"
+      ]
     }
   },
   "workspace": {
@@ -1740,6 +1819,7 @@
         "npm:@react-router/dev@^7.9.5",
         "npm:@react-router/fs-routes@^7.9.5",
         "npm:@tailwindcss/vite@^4.1.16",
+        "npm:@tanstack/react-query@5.90.6",
         "npm:@types/node@^24.10.0",
         "npm:@types/react-dom@^19.2.2",
         "npm:@types/react@^19.2.2",
@@ -1756,7 +1836,8 @@
         "npm:typescript@^5.9.3",
         "npm:viem@2.48.4",
         "npm:vite-tsconfig-paths@^5.1.4",
-        "npm:vite@^7.1.12"
+        "npm:vite@^7.1.12",
+        "npm:wagmi@^3.6.4"
       ]
     }
   }

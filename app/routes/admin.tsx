@@ -4,6 +4,8 @@ import { formatEther } from "viem";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { ThemeToggle } from "~/components/theme";
+import { WalletProvider } from "~/components/wallet/wallet-provider";
+import { FundTreasury } from "~/components/wallet/fund-treasury";
 import { getBubblesSecret } from "~/lib/env.server";
 import { PAYOUT_CHAINS } from "~/lib/chains.server";
 import {
@@ -174,7 +176,15 @@ function Dashboard({ keys, treasury }: { keys: KeyRecord[]; treasury: Treasury |
   return (
     <Shell>
       <div className="flex flex-col gap-6">
-        <TreasuryPanel treasury={treasury} />
+        {treasury ? (
+          <WalletProvider>
+            <FundTreasury treasury={treasury} />
+          </WalletProvider>
+        ) : (
+          <div className="rounded-lg border border-border p-4 text-muted-foreground text-sm">
+            Treasury unavailable — <code className="font-mono">BUBBLES_PRIVATE_KEY</code> is unset.
+          </div>
+        )}
 
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
@@ -216,42 +226,6 @@ function Dashboard({ keys, treasury }: { keys: KeyRecord[]; treasury: Treasury |
         <KeysTable keys={keys} />
       </div>
     </Shell>
-  );
-}
-
-function TreasuryPanel({ treasury }: { treasury: Treasury | null }) {
-  if (!treasury) {
-    return (
-      <div className="rounded-lg border border-border p-4 text-muted-foreground text-sm">
-        Treasury unavailable — <code className="font-mono">BUBBLES_PRIVATE_KEY</code> is unset.
-      </div>
-    );
-  }
-  return (
-    <div className="rounded-lg border border-border p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-grotesque font-semibold text-lg tracking-tight">Treasury</h2>
-        <code className="font-mono text-muted-foreground text-sm" title={treasury.address}>
-          {treasury.address}
-        </code>
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {treasury.chains.map((c) => (
-          <div key={c.chainId} className="rounded-md border border-border/60 px-3 py-2">
-            <div className="text-muted-foreground text-xs capitalize">{c.slug}</div>
-            <div className="mt-0.5 font-mono text-sm" title={c.error ?? undefined}>
-              {c.balance === null ? (
-                <span className="text-destructive">error</span>
-              ) : (
-                <>
-                  {formatBalance(c.balance)} <span className="text-muted-foreground">{c.symbol}</span>
-                </>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
   );
 }
 
@@ -318,14 +292,4 @@ function StatusBadge({ status }: { status: KeyRecord["status"] }) {
 function formatDate(ts?: number): string {
   if (!ts) return "—";
   return new Date(ts).toLocaleString();
-}
-
-// Trims the full-precision ether string to something readable, while still
-// showing "tiny but non-zero" balances rather than rounding them to 0.
-function formatBalance(ether: string): string {
-  const n = Number(ether);
-  if (!Number.isFinite(n)) return ether;
-  if (n === 0) return "0";
-  if (n < 0.0001) return "<0.0001";
-  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
