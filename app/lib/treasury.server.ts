@@ -12,7 +12,14 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { PAYOUT_CHAINS, type PayoutChain } from "~/lib/chains.server";
 import { getBubblesPrivateKey, getRpcUrl } from "~/lib/env.server";
-import { buildNativeSwapTx, pickRandomTokens, type RandomToken, randomProportions } from "~/lib/odos.server";
+import {
+  buildNativeSwapTx,
+  getTokenPool,
+  type NativeSwapTx,
+  OdosRoutingError,
+  type RandomToken,
+  randomProportions,
+} from "~/lib/odos.server";
 
 /**
  * Native payouts are signed by a single treasury EOA derived from
@@ -37,9 +44,11 @@ const RANDOM_TOKEN_COUNT = 5;
 // [10%, 20%]; the remainder is swapped into the random token basket.
 const NATIVE_KEEP_MIN_BPS = 1000;
 const NATIVE_KEEP_MAX_BPS = 2000;
-// How many times to re-roll the random token basket when Odos can't route it
-// (e.g. an illiquid pick) before falling back to an all-native payout.
-const MAX_SWAP_ATTEMPTS = 3;
+// Max Odos quote attempts per chain before falling back to an all-native
+// payout. Each attempt either succeeds, surgically drops one unroutable token
+// and retries the rest of the basket, or (on a non-routing error) gives up — so
+// this budget mostly bounds how many illiquid picks we'll skip past.
+const MAX_SWAP_ATTEMPTS = 10;
 
 let cachedAccount: Account | null = null;
 const publicClients = new Map<number, PublicClient>();
@@ -179,25 +188,53 @@ function randomNativeKeepBps(): number {
 }
 
 /**
- * Builds and broadcasts a single Odos swap that sells `swapValue` native into a
- * random token basket delivered to `to`. Re-rolls the basket up to
- * `MAX_SWAP_ATTEMPTS` times when Odos can't route the picks. Returns null when
- * every attempt fails so the caller can fall back to an all-native payout.
+ * Builds (but does not broadcast) a single Odos swap that sells `swapValue`
+ * native into a basket of `RANDOM_TOKEN_COUNT` random tokens delivered to `to`.
+ *
+ * Odos rejects a multi-output quote if *any* output token is unroutable, and the
+ * chain catalog is full of illiquid/receipt tokens — so re-rolling the whole
+ * basket rarely converges. Instead we walk a shuffled candidate pool: when Odos
+ * names an unroutable token, we drop just that token and backfill from the pool,
+ * keeping the routable picks. Returns null when we can't assemble a routable
+ * basket so the caller can fall back to an all-native payout.
+ *
+ * Broadcasting is left to the caller so the (slow) quote/assemble can be awaited
+ * for the claim response while the actual send happens in the background.
  */
-async function trySwapBasket(
+async function buildSwapBasket(
   payout: PayoutChain,
   account: Account,
   to: Address,
   swapValue: bigint,
-  nonce: number,
-): Promise<{ swapTxHash: Hash; tokens: RandomToken[] } | null> {
+): Promise<{ swapTx: NativeSwapTx; tokens: RandomToken[] } | null> {
   const chainId = payout.chain.id;
-  for (let attempt = 0; attempt < MAX_SWAP_ATTEMPTS; attempt++) {
+
+  let pool: RandomToken[];
+  try {
+    pool = await getTokenPool(chainId);
+  } catch (err) {
+    console.error(`payout: odos token list failed on ${payout.slug}`, err);
+    return null;
+  }
+  if (pool.length === 0) return null;
+
+  // Walk the shuffled pool, topping the basket up to RANDOM_TOKEN_COUNT and
+  // skipping any token already proven unroutable.
+  const dead = new Set<string>();
+  const basket: RandomToken[] = [];
+  let cursor = 0;
+  const refill = () => {
+    while (basket.length < RANDOM_TOKEN_COUNT && cursor < pool.length) {
+      const cand = pool[cursor++];
+      if (!dead.has(cand.address.toLowerCase())) basket.push(cand);
+    }
+  };
+  refill();
+
+  for (let attempt = 0; attempt < MAX_SWAP_ATTEMPTS && basket.length > 0; attempt++) {
     try {
-      const tokens = await pickRandomTokens(chainId, RANDOM_TOKEN_COUNT);
-      if (tokens.length === 0) return null;
-      const proportions = randomProportions(tokens.length);
-      const outputs = tokens.map((t, i) => ({ address: t.address, proportion: proportions[i] }));
+      const proportions = randomProportions(basket.length);
+      const outputs = basket.map((t, i) => ({ address: t.address, proportion: proportions[i] }));
 
       const swapTx = await buildNativeSwapTx({
         chainId,
@@ -207,20 +244,29 @@ async function trySwapBasket(
         outputs,
       });
 
-      const swapTxHash = await getWalletClient(payout, account).sendTransaction({
-        account,
-        chain: payout.chain,
-        to: swapTx.to,
-        data: swapTx.data,
-        value: swapTx.value,
-        nonce,
-      });
-      return { swapTxHash, tokens };
+      return { swapTx, tokens: [...basket] };
     } catch (err) {
-      console.error(`payout: odos swap attempt ${attempt + 1} failed on ${payout.slug}`, err);
+      if (err instanceof OdosRoutingError && err.unroutableToken) {
+        // Drop just the unroutable token and backfill the basket from the pool.
+        const bad = err.unroutableToken.toLowerCase();
+        dead.add(bad);
+        const idx = basket.findIndex((t) => t.address.toLowerCase() === bad);
+        if (idx >= 0) basket.splice(idx, 1);
+        refill();
+        continue;
+      }
+      // Non-routing failure (RPC, rate limit after retries, etc.) — re-rolling
+      // won't help, so fall back to native.
+      console.error(`payout: odos swap failed on ${payout.slug}`, err);
+      return null;
     }
   }
   return null;
+}
+
+/** Fire-and-forget a broadcast so the claim response isn't blocked on it. */
+function broadcastInBackground(label: string, send: () => Promise<unknown>): void {
+  void send().catch((err) => console.error(`payout: broadcast failed (${label})`, err));
 }
 
 /**
@@ -228,8 +274,11 @@ async function trySwapBasket(
  * (always present) plus a basket of random tokens swapped via Odos and sent
  * straight to the claimant. Marks nothing in KV and never throws — each chain is
  * isolated so one RPC/funding/routing failure can't block the others or roll
- * back an already-claimed key. Transactions are broadcast without waiting for
- * confirmation.
+ * back an already-claimed key.
+ *
+ * The slow part (the Odos quote/assemble) is awaited because its token basket is
+ * returned to the claimant; the resulting on-chain sends are broadcast in the
+ * background so the claim response returns as soon as the basket is known.
  */
 export async function sendPayouts(to: Address, unusedKeys: number): Promise<PayoutResult[]> {
   const account = getTreasuryAccount();
@@ -240,9 +289,13 @@ export async function sendPayouts(to: Address, unusedKeys: number): Promise<Payo
       const base = { chain: payout.slug, chainId: payout.chain.id };
       try {
         const publicClient = getPublicClient(payout);
-        const [balance, gasPrice] = await Promise.all([
+        const walletClient = getWalletClient(payout, account);
+        // Manage the nonce explicitly so the two back-to-back sends from the same
+        // EOA don't collide on the pending nonce.
+        const [balance, gasPrice, nonce] = await Promise.all([
           publicClient.getBalance({ address: account.address }),
           publicClient.getGasPrice(),
+          publicClient.getTransactionCount({ address: account.address, blockTag: "pending" }),
         ]);
 
         const amount = computePayout(balance, gasPrice, unusedKeys);
@@ -256,48 +309,44 @@ export async function sendPayouts(to: Address, unusedKeys: number): Promise<Payo
         const nativeKeep = (amount * BigInt(keepBps)) / 10_000n;
         const swapAmount = amount - nativeKeep;
 
-        const walletClient = getWalletClient(payout, account);
-        // Manage the nonce explicitly so the two back-to-back sends from the same
-        // EOA don't collide on the pending nonce.
-        const nonce = await publicClient.getTransactionCount({ address: account.address, blockTag: "pending" });
-
-        const txHash = await walletClient.sendTransaction({
-          account,
-          chain: payout.chain,
-          to,
-          value: nativeKeep,
-          nonce,
-        });
-
         if (swapAmount <= 0n) {
-          return { ...base, amount: nativeKeep.toString(), txHash };
+          broadcastInBackground(`native ${payout.slug}`, () =>
+            walletClient.sendTransaction({ account, chain: payout.chain, to, value: nativeKeep, nonce }),
+          );
+          return { ...base, amount: nativeKeep.toString() };
         }
 
-        const swap = await trySwapBasket(payout, account, to, swapAmount, nonce + 1);
+        const swap = await buildSwapBasket(payout, account, to, swapAmount);
         if (swap) {
+          // Broadcast native first, then the swap (nonce+1) only after the native
+          // send is accepted, so the swap isn't stuck behind a missing nonce.
+          broadcastInBackground(`payout ${payout.slug}`, async () => {
+            await walletClient.sendTransaction({ account, chain: payout.chain, to, value: nativeKeep, nonce });
+            await walletClient.sendTransaction({
+              account,
+              chain: payout.chain,
+              to: swap.swapTx.to,
+              data: swap.swapTx.data,
+              value: swap.swapTx.value,
+              nonce: nonce + 1,
+            });
+          });
           return {
             ...base,
             amount: nativeKeep.toString(),
-            txHash,
             swapAmount: swapAmount.toString(),
-            swapTxHash: swap.swapTxHash,
             tokens: swap.tokens,
           };
         }
 
-        // Odos couldn't route the basket — fall back to sending the remainder as
-        // native so the claimant is still fully paid.
-        const fallbackHash = await walletClient.sendTransaction({
-          account,
-          chain: payout.chain,
-          to,
-          value: swapAmount,
-          nonce: nonce + 1,
-        });
+        // Odos couldn't route a basket — send the whole amount as native so the
+        // claimant is still fully paid.
+        broadcastInBackground(`native-fallback ${payout.slug}`, () =>
+          walletClient.sendTransaction({ account, chain: payout.chain, to, value: amount, nonce }),
+        );
         return {
           ...base,
           amount: amount.toString(),
-          txHash: fallbackHash,
           error: "odos routing failed; sent remainder as native",
         };
       } catch (err) {

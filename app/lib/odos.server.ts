@@ -1,5 +1,6 @@
 import type { Address, Hex } from "viem";
 import { getOdosApiKey } from "~/lib/env.server";
+import { SAFE_TOKENS } from "~/lib/safe-tokens";
 
 /**
  * Minimal, server-side Odos integration for bubbles payouts.
@@ -44,19 +45,67 @@ function odosHeaders(extra?: Record<string, string>): Record<string, string> {
  */
 const SLIPPAGE_LIMIT_PERCENT = 0.5;
 
-interface OdosTokenInfo {
-  symbol: string;
-  decimals: number;
+// Odos enforces per-second/per-minute rate limits per API key. Rather than
+// serialize every request (which made a 4-chain claim ~3x slower), we cap how
+// many Odos requests are in flight at once — so all chains route concurrently
+// while staying under the burst limit — and retry transient failures (429s and
+// 5xx) with exponential backoff.
+const MAX_CONCURRENT_REQUESTS = 4;
+const MAX_TRANSIENT_RETRIES = 4;
+const RETRY_BASE_DELAY_MS = 300;
+
+// Odos rejects a quote whose output basket contains a token it can't route,
+// returning HTTP 400 with this code and the offending address in `detail`.
+const ODOS_NO_ROUTE_CODE = 4016;
+
+/**
+ * Raised when Odos can't route one of the requested output tokens. Carries the
+ * offending token address so the caller can drop just that token and retry the
+ * rest of the basket instead of throwing the whole basket away.
+ */
+export class OdosRoutingError extends Error {
+  readonly unroutableToken: Address | null;
+  constructor(message: string, unroutableToken: Address | null) {
+    super(message);
+    this.name = "OdosRoutingError";
+    this.unroutableToken = unroutableToken;
+  }
 }
 
-// Odos `/token?query=&chainId=N` returns an array of catalog entries.
-interface OdosTokenCatalogEntry {
-  address: string;
-  chainId: string;
-  symbol: string;
-  name: string;
-  decimals: number;
-  isWhitelisted: boolean;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// FIFO concurrency gate shared by every Odos request across all in-flight
+// payouts. Lets up to MAX_CONCURRENT_REQUESTS run at once; the rest queue.
+let inFlight = 0;
+const waiters: Array<() => void> = [];
+function acquireSlot(): Promise<void> {
+  if (inFlight < MAX_CONCURRENT_REQUESTS) {
+    inFlight++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => waiters.push(resolve));
+}
+function releaseSlot(): void {
+  const next = waiters.shift();
+  // Hand the slot directly to the next waiter (count unchanged), or free it.
+  if (next) next();
+  else inFlight--;
+}
+
+/** True for responses worth retrying: rate limits and transient server errors. */
+function isTransientStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+/** Extracts the offending token address and error code from an Odos error body. */
+function parseOdosError(body: string): { code: number | null; token: Address | null } {
+  try {
+    const json = JSON.parse(body) as { errorCode?: number; detail?: string };
+    const match = json.detail?.match(/0x[0-9a-fA-F]{40}/);
+    return { code: json.errorCode ?? null, token: (match?.[0] as Address) ?? null };
+  } catch {
+    return { code: null, token: null };
+  }
 }
 
 interface OdosQuoteResponse {
@@ -71,50 +120,37 @@ interface OdosAssembleResponse {
   };
 }
 
-/** Per-chain token list cache. The Odos token universe is effectively static. */
-const tokenListCache = new Map<number, Map<Address, OdosTokenInfo>>();
-
 async function postJson<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: odosHeaders({ "Content-Type": "application/json", accept: "application/json" }),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Odos request failed (${res.status}): ${text}`);
+  for (let attempt = 0; ; attempt++) {
+    let retryDelay = -1;
+    await acquireSlot();
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: odosHeaders({ "Content-Type": "application/json", accept: "application/json" }),
+        body: JSON.stringify(body),
+      });
+      if (res.ok) return (await res.json()) as T;
+
+      const text = await res.text().catch(() => "");
+      // Back off and retry transient rate-limit / server errors before giving up.
+      if (isTransientStatus(res.status) && attempt < MAX_TRANSIENT_RETRIES) {
+        retryDelay = RETRY_BASE_DELAY_MS * 2 ** attempt;
+      } else {
+        // Surface an unroutable token as a typed error so the caller can drop
+        // just that token rather than abandoning the whole basket.
+        const { code, token } = parseOdosError(text);
+        if (code === ODOS_NO_ROUTE_CODE) {
+          throw new OdosRoutingError(`Odos can't route token ${token ?? "(unknown)"}`, token);
+        }
+        throw new Error(`Odos request failed (${res.status}): ${text}`);
+      }
+    } finally {
+      releaseSlot();
+    }
+    // Back off outside the concurrency gate so we don't hold a slot while waiting.
+    await sleep(retryDelay);
   }
-  return (await res.json()) as T;
-}
-
-/**
- * Fetches (and caches) the Odos-supported token catalog for a chain, excluding
- * the native sentinel so callers only ever pick ERC20 outputs. The catalog is a
- * free public read endpoint (no API key / enterprise host needed).
- */
-export async function fetchOdosTokenList(chainId: number): Promise<Map<Address, OdosTokenInfo>> {
-  const cached = tokenListCache.get(chainId);
-  if (cached) return cached;
-
-  const url = new URL(`${ODOS_PUBLIC_HOST}/token`);
-  url.searchParams.set("query", "");
-  url.searchParams.set("chainId", String(chainId));
-
-  const res = await fetch(url.toString(), { headers: { accept: "application/json" } });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Odos /token failed for chain ${chainId} (${res.status}): ${text}`);
-  }
-  const entries = (await res.json()) as OdosTokenCatalogEntry[];
-
-  const list = new Map<Address, OdosTokenInfo>();
-  for (const entry of entries) {
-    const addr = entry.address as Address;
-    if (addr.toLowerCase() === NATIVE_SENTINEL.toLowerCase()) continue;
-    list.set(addr, { symbol: entry.symbol, decimals: entry.decimals });
-  }
-  tokenListCache.set(chainId, list);
-  return list;
 }
 
 export interface RandomToken {
@@ -122,18 +158,24 @@ export interface RandomToken {
   symbol: string;
 }
 
-/** Fisher-Yates partial shuffle: pick `count` distinct random tokens. */
-export async function pickRandomTokens(chainId: number, count: number): Promise<RandomToken[]> {
-  const list = await fetchOdosTokenList(chainId);
-  const entries = Array.from(list.entries());
-  for (let i = entries.length - 1; i > 0; i--) {
+/** Fisher-Yates shuffle (in place). */
+function shuffle<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [entries[i], entries[j]] = [entries[j], entries[i]];
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-  return entries.slice(0, Math.min(count, entries.length)).map(([address, info]) => ({
-    address,
-    symbol: info.symbol,
-  }));
+  return arr;
+}
+
+/**
+ * Returns the chain's curated safe-token allowlist as a freshly shuffled
+ * candidate pool. Callers walk the pool in order, dropping any token Odos
+ * reports as unroutable and backfilling from later in the pool — though with a
+ * vetted allowlist that fallback should rarely fire.
+ */
+export async function getTokenPool(chainId: number): Promise<RandomToken[]> {
+  const list = SAFE_TOKENS[chainId] ?? [];
+  return shuffle(list.map((t) => ({ address: t.address, symbol: t.symbol })));
 }
 
 /**
