@@ -1,0 +1,8 @@
+node_modules
+build
+.react-router
+.env
+*.kv
+*.kv-shm
+*.kv-wal
+.DS_Store
