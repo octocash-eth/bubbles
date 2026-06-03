@@ -1,9 +1,11 @@
 import { Form, redirect, useNavigation } from "react-router";
+import { formatEther } from "viem";
 
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { ThemeToggle } from "~/components/theme";
 import { getBubblesSecret } from "~/lib/env.server";
+import { PAYOUT_CHAINS } from "~/lib/chains.server";
 import {
   commitAdminSession,
   destroyAdminSession,
@@ -11,11 +13,45 @@ import {
   verifySecret,
 } from "~/lib/auth.server";
 import { createKeys, listKeys, type KeyRecord } from "~/lib/kv.server";
+import { getTreasuryAddress, getTreasuryBalances } from "~/lib/treasury.server";
 import { formatAddress } from "~/lib/utils";
 
 import type { Route } from "./+types/admin";
 
 const MAX_KEYS_PER_REQUEST = 100;
+
+const SYMBOL_BY_CHAIN_ID = new Map(
+  PAYOUT_CHAINS.map((p) => [p.chain.id, p.chain.nativeCurrency.symbol]),
+);
+
+type TreasuryChain = {
+  slug: string;
+  chainId: number;
+  symbol: string;
+  balance: string | null;
+  error?: string;
+};
+
+type Treasury = {
+  address: string;
+  chains: TreasuryChain[];
+};
+
+async function loadTreasury(): Promise<Treasury | null> {
+  const address = getTreasuryAddress();
+  if (!address) return null;
+  const balances = await getTreasuryBalances();
+  return {
+    address,
+    chains: balances.map((b) => ({
+      slug: b.slug,
+      chainId: b.chainId,
+      symbol: SYMBOL_BY_CHAIN_ID.get(b.chainId) ?? "",
+      balance: b.balance === null ? null : formatEther(b.balance),
+      ...("error" in b && b.error ? { error: b.error } : {}),
+    })),
+  };
+}
 
 export async function loader({ request }: Route.LoaderArgs) {
   if (!getBubblesSecret()) {
@@ -24,7 +60,8 @@ export async function loader({ request }: Route.LoaderArgs) {
   if (!(await isAdmin(request))) {
     return { state: "login" as const };
   }
-  return { state: "authed" as const, keys: await listKeys() };
+  const [keys, treasury] = await Promise.all([listKeys(), loadTreasury()]);
+  return { state: "authed" as const, keys, treasury };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -74,7 +111,7 @@ export default function AdminPage({ loaderData, actionData }: Route.ComponentPro
       </Shell>
     );
   }
-  return <Dashboard keys={loaderData.keys} />;
+  return <Dashboard keys={loaderData.keys} treasury={loaderData.treasury} />;
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -128,7 +165,7 @@ function LoginPanel({ error }: { error: string | null }) {
   );
 }
 
-function Dashboard({ keys }: { keys: KeyRecord[] }) {
+function Dashboard({ keys, treasury }: { keys: KeyRecord[]; treasury: Treasury | null }) {
   const navigation = useNavigation();
   const minting = navigation.state !== "idle" && navigation.formData?.get("intent") === "mint";
   const unused = keys.filter((k) => k.status === "unused").length;
@@ -137,6 +174,8 @@ function Dashboard({ keys }: { keys: KeyRecord[] }) {
   return (
     <Shell>
       <div className="flex flex-col gap-6">
+        <TreasuryPanel treasury={treasury} />
+
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="font-grotesque font-bold text-3xl tracking-tight">Keys</h1>
@@ -177,6 +216,42 @@ function Dashboard({ keys }: { keys: KeyRecord[] }) {
         <KeysTable keys={keys} />
       </div>
     </Shell>
+  );
+}
+
+function TreasuryPanel({ treasury }: { treasury: Treasury | null }) {
+  if (!treasury) {
+    return (
+      <div className="rounded-lg border border-border p-4 text-muted-foreground text-sm">
+        Treasury unavailable — <code className="font-mono">BUBBLES_PRIVATE_KEY</code> is unset.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-border p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="font-grotesque font-semibold text-lg tracking-tight">Treasury</h2>
+        <code className="font-mono text-muted-foreground text-sm" title={treasury.address}>
+          {treasury.address}
+        </code>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {treasury.chains.map((c) => (
+          <div key={c.chainId} className="rounded-md border border-border/60 px-3 py-2">
+            <div className="text-muted-foreground text-xs capitalize">{c.slug}</div>
+            <div className="mt-0.5 font-mono text-sm" title={c.error ?? undefined}>
+              {c.balance === null ? (
+                <span className="text-destructive">error</span>
+              ) : (
+                <>
+                  {formatBalance(c.balance)} <span className="text-muted-foreground">{c.symbol}</span>
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -243,4 +318,14 @@ function StatusBadge({ status }: { status: KeyRecord["status"] }) {
 function formatDate(ts?: number): string {
   if (!ts) return "—";
   return new Date(ts).toLocaleString();
+}
+
+// Trims the full-precision ether string to something readable, while still
+// showing "tiny but non-zero" balances rather than rounding them to 0.
+function formatBalance(ether: string): string {
+  const n = Number(ether);
+  if (!Number.isFinite(n)) return ether;
+  if (n === 0) return "0";
+  if (n < 0.0001) return "<0.0001";
+  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
