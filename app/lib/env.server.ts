@@ -34,3 +34,14 @@ export function getRpcUrl(envName: string): string | undefined {
   const v = Deno.env.get(envName)?.trim();
   return v && v.length > 0 ? v : undefined;
 }
+
+/**
+ * Optional Odos API key. When set, `/sor/*` calls route to Odos's monetized
+ * `enterprise-api.odos.xyz` host with the `x-api-key` header (see
+ * https://docs.odos.xyz/home/api-monetization); otherwise the public
+ * `api.odos.xyz` host is used. Server-side calls need no CORS proxy.
+ */
+export function getOdosApiKey(): string | undefined {
+  const v = Deno.env.get("ODOS_API_KEY")?.trim();
+  return v && v.length > 0 ? v : undefined;
+}

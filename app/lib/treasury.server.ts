@@ -12,6 +12,7 @@ import { privateKeyToAccount } from "viem/accounts";
 
 import { PAYOUT_CHAINS, type PayoutChain } from "~/lib/chains.server";
 import { getBubblesPrivateKey, getRpcUrl } from "~/lib/env.server";
+import { buildNativeSwapTx, pickRandomTokens, type RandomToken, randomProportions } from "~/lib/odos.server";
 
 /**
  * Native payouts are signed by a single treasury EOA derived from
@@ -20,11 +21,25 @@ import { getBubblesPrivateKey, getRpcUrl } from "~/lib/env.server";
  * balance reads and sends.
  */
 
-// Gas a plain native transfer costs, plus a safety multiplier so the reserve
-// comfortably covers this tx (and a little headroom for gas-price drift between
-// the estimate and inclusion) without stranding the treasury.
+// Gas a plain native transfer costs, plus a generous estimate for the Odos swap
+// tx (sells native into a random token basket — routing through aggregators is
+// far heavier than a transfer). Both are reserved per chain, times a safety
+// multiplier for gas-price drift between estimate and inclusion, so the
+// treasury never strands itself mid-payout.
 const TRANSFER_GAS = 21_000n;
+const SWAP_GAS = 400_000n;
 const GAS_RESERVE_MULTIPLIER = 3n;
+
+// Each claim delivers the native currency (always present) plus this many
+// random tokens per chain. Odos supports up to 6 outputs in one swap.
+const RANDOM_TOKEN_COUNT = 5;
+// Fraction of the per-chain payout kept as native, randomized per claim within
+// [10%, 20%]; the remainder is swapped into the random token basket.
+const NATIVE_KEEP_MIN_BPS = 1000;
+const NATIVE_KEEP_MAX_BPS = 2000;
+// How many times to re-roll the random token basket when Odos can't route it
+// (e.g. an illiquid pick) before falling back to an all-native payout.
+const MAX_SWAP_ATTEMPTS = 3;
 
 let cachedAccount: Account | null = null;
 const publicClients = new Map<number, PublicClient>();
@@ -112,7 +127,9 @@ export async function getTreasuryBalances(): Promise<
  */
 export function computePayout(balance: bigint, gasPriceWei: bigint, unusedKeys: number): bigint {
   if (unusedKeys <= 0) return 0n;
-  const reserve = TRANSFER_GAS * gasPriceWei * GAS_RESERVE_MULTIPLIER;
+  // Each payout broadcasts two txs per chain: the native transfer and the Odos
+  // swap. Reserve gas for both so the swap can't strand the treasury.
+  const reserve = (TRANSFER_GAS + SWAP_GAS) * gasPriceWei * GAS_RESERVE_MULTIPLIER;
   const spendable = balance - reserve;
   if (spendable <= 0n) return 0n;
   const payout = spendable / BigInt(unusedKeys);
@@ -122,8 +139,15 @@ export function computePayout(balance: bigint, gasPriceWei: bigint, unusedKeys: 
 export type PayoutResult = {
   chain: string;
   chainId: number;
+  /** Native amount sent directly to the claimant, as a wei integer string. */
   amount: string;
   txHash?: Hash;
+  /** Native amount routed into the random token basket, as a wei integer string. */
+  swapAmount?: string;
+  /** Tx hash of the Odos swap that delivered the random tokens. */
+  swapTxHash?: Hash;
+  /** Random tokens delivered to the claimant via the swap. */
+  tokens?: RandomToken[];
   error?: string;
 };
 
@@ -148,11 +172,64 @@ export async function sendFromTreasury(chainId: number, to: Address, value: bigi
   });
 }
 
+/** Random native-keep fraction in basis points, uniform in [MIN, MAX]. */
+function randomNativeKeepBps(): number {
+  const span = NATIVE_KEEP_MAX_BPS - NATIVE_KEEP_MIN_BPS;
+  return NATIVE_KEEP_MIN_BPS + Math.floor(Math.random() * (span + 1));
+}
+
 /**
- * Best-effort native payout across every chain. Marks nothing in KV and never
- * throws — each chain is isolated so one RPC/funding failure can't block the
- * others or roll back an already-claimed key. Transactions are broadcast
- * without waiting for confirmation.
+ * Builds and broadcasts a single Odos swap that sells `swapValue` native into a
+ * random token basket delivered to `to`. Re-rolls the basket up to
+ * `MAX_SWAP_ATTEMPTS` times when Odos can't route the picks. Returns null when
+ * every attempt fails so the caller can fall back to an all-native payout.
+ */
+async function trySwapBasket(
+  payout: PayoutChain,
+  account: Account,
+  to: Address,
+  swapValue: bigint,
+  nonce: number,
+): Promise<{ swapTxHash: Hash; tokens: RandomToken[] } | null> {
+  const chainId = payout.chain.id;
+  for (let attempt = 0; attempt < MAX_SWAP_ATTEMPTS; attempt++) {
+    try {
+      const tokens = await pickRandomTokens(chainId, RANDOM_TOKEN_COUNT);
+      if (tokens.length === 0) return null;
+      const proportions = randomProportions(tokens.length);
+      const outputs = tokens.map((t, i) => ({ address: t.address, proportion: proportions[i] }));
+
+      const swapTx = await buildNativeSwapTx({
+        chainId,
+        treasury: account.address,
+        recipient: to,
+        valueWei: swapValue,
+        outputs,
+      });
+
+      const swapTxHash = await getWalletClient(payout, account).sendTransaction({
+        account,
+        chain: payout.chain,
+        to: swapTx.to,
+        data: swapTx.data,
+        value: swapTx.value,
+        nonce,
+      });
+      return { swapTxHash, tokens };
+    } catch (err) {
+      console.error(`payout: odos swap attempt ${attempt + 1} failed on ${payout.slug}`, err);
+    }
+  }
+  return null;
+}
+
+/**
+ * Best-effort payout across every chain. Each chain delivers native currency
+ * (always present) plus a basket of random tokens swapped via Odos and sent
+ * straight to the claimant. Marks nothing in KV and never throws — each chain is
+ * isolated so one RPC/funding/routing failure can't block the others or roll
+ * back an already-claimed key. Transactions are broadcast without waiting for
+ * confirmation.
  */
 export async function sendPayouts(to: Address, unusedKeys: number): Promise<PayoutResult[]> {
   const account = getTreasuryAccount();
@@ -173,13 +250,56 @@ export async function sendPayouts(to: Address, unusedKeys: number): Promise<Payo
           return { ...base, amount: "0", error: "nothing to send after gas reserve" };
         }
 
-        const txHash = await getWalletClient(payout, account).sendTransaction({
+        // Keep a random 10-20% as native (always present) and swap the rest into
+        // the random token basket.
+        const keepBps = randomNativeKeepBps();
+        const nativeKeep = (amount * BigInt(keepBps)) / 10_000n;
+        const swapAmount = amount - nativeKeep;
+
+        const walletClient = getWalletClient(payout, account);
+        // Manage the nonce explicitly so the two back-to-back sends from the same
+        // EOA don't collide on the pending nonce.
+        const nonce = await publicClient.getTransactionCount({ address: account.address, blockTag: "pending" });
+
+        const txHash = await walletClient.sendTransaction({
           account,
           chain: payout.chain,
           to,
-          value: amount,
+          value: nativeKeep,
+          nonce,
         });
-        return { ...base, amount: amount.toString(), txHash };
+
+        if (swapAmount <= 0n) {
+          return { ...base, amount: nativeKeep.toString(), txHash };
+        }
+
+        const swap = await trySwapBasket(payout, account, to, swapAmount, nonce + 1);
+        if (swap) {
+          return {
+            ...base,
+            amount: nativeKeep.toString(),
+            txHash,
+            swapAmount: swapAmount.toString(),
+            swapTxHash: swap.swapTxHash,
+            tokens: swap.tokens,
+          };
+        }
+
+        // Odos couldn't route the basket — fall back to sending the remainder as
+        // native so the claimant is still fully paid.
+        const fallbackHash = await walletClient.sendTransaction({
+          account,
+          chain: payout.chain,
+          to,
+          value: swapAmount,
+          nonce: nonce + 1,
+        });
+        return {
+          ...base,
+          amount: amount.toString(),
+          txHash: fallbackHash,
+          error: "odos routing failed; sent remainder as native",
+        };
       } catch (err) {
         return {
           ...base,
