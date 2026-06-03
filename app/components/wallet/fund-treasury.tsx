@@ -11,6 +11,15 @@ import { getWalletChain } from "~/lib/wallet";
 /** How often the live treasury balances refetch, in ms. */
 const BALANCE_REFETCH_INTERVAL = 12_000;
 
+/** Trims a full-precision ether string to something readable for display. */
+function trimAmount(ether: string): string {
+  const n = Number(ether);
+  if (!Number.isFinite(n)) return ether;
+  if (n === 0) return "0";
+  if (n < 0.0001) return "<0.0001";
+  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
 type TreasuryChain = {
   slug: string;
   chainId: number;
@@ -41,62 +50,65 @@ export function FundTreasury({ treasury }: { treasury: Treasury }) {
   const { connect, isPending: connecting } = useConnect();
   const { disconnect } = useDisconnect();
 
-  if (!mounted) {
-    return <div className="rounded-lg border border-border p-4 text-muted-foreground text-sm">Loading wallet…</div>;
-  }
-
   return (
-    <div className="rounded-lg border border-border p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <section className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex flex-col gap-0.5">
-          <h2 className="font-grotesque font-semibold text-lg tracking-tight">
-            Set treasury balances
-          </h2>
+          <h2 className="font-grotesque font-bold text-2xl tracking-tight">Treasury balances</h2>
           <code className="font-mono text-muted-foreground text-sm" title={treasury.address}>
             {treasury.address}
           </code>
         </div>
-        {isConnected && address ? (
-          <div className="flex items-center gap-2">
-            <code className="font-mono text-muted-foreground text-sm" title={address}>
-              {formatAddress(address)}
-            </code>
-            <Button variant="ghost" size="sm" onClick={() => disconnect()}>
-              Disconnect
+        {mounted &&
+          (isConnected && address ? (
+            <div className="flex items-center gap-2">
+              <code className="font-mono text-muted-foreground text-sm" title={address}>
+                {formatAddress(address)}
+              </code>
+              <Button variant="ghost" size="sm" onClick={() => disconnect()}>
+                Disconnect
+              </Button>
+            </div>
+          ) : (
+            <Button size="sm" isLoading={connecting} onClick={() => connect({ connector: injected() })}>
+              Connect wallet
             </Button>
-          </div>
-        ) : (
-          <Button size="sm" isLoading={connecting} onClick={() => connect({ connector: injected() })}>
-            Connect wallet
-          </Button>
-        )}
+          ))}
       </div>
 
-      <p className="mt-2 text-muted-foreground text-sm">
-        Balances update live. Edit one and apply: raising it tops up from your wallet, lowering it refunds the
-        difference to{" "}
-        {address ? (
-          <code className="font-mono" title={address}>
-            {formatAddress(address)}
-          </code>
-        ) : (
-          "your connected wallet"
-        )}
-        .
-      </p>
+      {mounted ? (
+        <div className="rounded-2xl border-2 border-border-button bg-card p-5 shadow-button">
+          <p className="text-muted-foreground text-sm">
+            Balances update live. Edit one and apply: raising it tops up from your wallet, lowering it refunds the
+            difference to{" "}
+            {address ? (
+              <code className="font-mono" title={address}>
+                {formatAddress(address)}
+              </code>
+            ) : (
+              "your connected wallet"
+            )}
+            .
+          </p>
 
-      <ul className="mt-4 flex flex-col gap-3">
-        {treasury.chains.map((chain) => (
-          <ChainRow
-            key={chain.chainId}
-            chain={chain}
-            treasuryAddress={treasury.address as Address}
-            account={address}
-            connected={isConnected}
-          />
-        ))}
-      </ul>
-    </div>
+          <ul className="mt-4 flex flex-col gap-3">
+            {treasury.chains.map((chain) => (
+              <ChainRow
+                key={chain.chainId}
+                chain={chain}
+                treasuryAddress={treasury.address as Address}
+                account={address}
+                connected={isConnected}
+              />
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <div className="rounded-2xl border-2 border-border-button bg-card p-5 text-muted-foreground text-sm shadow-button">
+          Loading wallet…
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -117,6 +129,16 @@ function ChainRow({
     address: treasuryAddress,
     chainId: chain.chainId,
     query: {
+      refetchInterval: BALANCE_REFETCH_INTERVAL,
+      refetchIntervalInBackground: true,
+    },
+  });
+
+  const walletBalance = useBalance({
+    address: account,
+    chainId: chain.chainId,
+    query: {
+      enabled: Boolean(account),
       refetchInterval: BALANCE_REFETCH_INTERVAL,
       refetchIntervalInBackground: true,
     },
@@ -212,7 +234,14 @@ function ChainRow({
 
   return (
     <li className="flex flex-wrap items-center gap-3">
-      <span className="w-24 font-medium">{viemChain?.name ?? chain.slug}</span>
+      <div className="flex min-w-28 flex-col">
+        <span className="font-medium">{viemChain?.name ?? chain.slug}</span>
+        {account && (
+          <span className="text-muted-foreground text-xs">
+            Wallet: {walletBalance.data ? `${trimAmount(formatEther(walletBalance.data.value))} ${chain.symbol}` : "…"}
+          </span>
+        )}
+      </div>
       <div className="flex items-center gap-2">
         <Input
           value={value}
