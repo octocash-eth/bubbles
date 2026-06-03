@@ -93,6 +93,19 @@ export async function countUnusedKeys(): Promise<number> {
   return count;
 }
 
+/**
+ * Returns every key record, newest first. Backs the admin dashboard table.
+ * Key volume is small (one-shot share tokens), so a full prefix scan is fine.
+ */
+export async function listKeys(): Promise<KeyRecord[]> {
+  const kv = await getKv();
+  const out: KeyRecord[] = [];
+  for await (const entry of kv.list<KeyRecord>({ prefix: ["keys", "by_id"] })) {
+    out.push(entry.value);
+  }
+  return out.sort((a, b) => b.createdAt - a.createdAt);
+}
+
 export type ClaimResult =
   | { ok: true; record: KeyRecord }
   | { ok: false; reason: "not_found" | "already_claimed" };

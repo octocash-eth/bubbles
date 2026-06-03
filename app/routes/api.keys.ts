@@ -1,5 +1,6 @@
 import { createKeys } from "~/lib/kv.server";
 import { getBubblesSecret } from "~/lib/env.server";
+import { timingSafeStringEqual } from "~/lib/auth.server";
 
 import type { Route } from "./+types/api.keys";
 
@@ -8,26 +9,6 @@ type CreateBody = {
 };
 
 const MAX_KEYS_PER_REQUEST = 100;
-
-/**
- * Constant-time(ish) string compare. Deno's `crypto.timingSafeEqual` only
- * accepts ArrayBufferViews so we hash both inputs first — equal hashes ⇒ equal
- * inputs (collisions excluded). For an admin-only API a plain `===` would do,
- * but this costs nothing and avoids future regrets.
- */
-async function timingSafeStringEqual(a: string, b: string): Promise<boolean> {
-  const enc = new TextEncoder();
-  const [ah, bh] = await Promise.all([
-    crypto.subtle.digest("SHA-256", enc.encode(a)),
-    crypto.subtle.digest("SHA-256", enc.encode(b)),
-  ]);
-  const av = new Uint8Array(ah);
-  const bv = new Uint8Array(bh);
-  if (av.length !== bv.length) return false;
-  let diff = 0;
-  for (let i = 0; i < av.length; i++) diff |= av[i] ^ bv[i];
-  return diff === 0;
-}
 
 export async function action({ request }: Route.ActionArgs) {
   if (request.method !== "POST") {

@@ -10,6 +10,7 @@ One-key, one-claim landing page that funnels visitors into [Octocash](https://oc
 - `POST /api/claim` `{ key, address }` → marks the key as claimed and, best-effort, sends a proportional native payout on Optimism, Base, Arbitrum, and Polygon.
 - `POST /api/keys` `{ n? }` with `Authorization: Bearer $BUBBLES_SECRET` → generates `n` keys (1–100, default 1).
 - `GET /api/treasury` (public) → returns the treasury address to recharge, the number of unused keys, and the current native balance per chain.
+- `/admin` → secret-gated dashboard. Enter `BUBBLES_SECRET` to log in (stored only in an HttpOnly session cookie), browse every key (claimed and unused), and mint new keys.
 
 ## Treasury payouts
 
@@ -28,7 +29,7 @@ Copy `.env.example` to `.env` and fill in the values below.
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `BUBBLES_SECRET` | Yes | Bearer token guarding `POST /api/keys`. Set to a long random string. |
+| `BUBBLES_SECRET` | Yes | Bearer token guarding `POST /api/keys` and the `/admin` dashboard login. Set to a long random string. |
 | `BUBBLES_PRIVATE_KEY` | Yes | Treasury EOA private key (`0x`-hex). Funds native payouts on every payout chain. |
 | `DENO_KV_PATH` | No | Path to the Deno KV store (defaults to the platform default when unset). |
 | `OCTOCASH_URL` | No | Redirect target for `/` and unknown keys (defaults to `https://octo.cash`). |
@@ -74,4 +75,36 @@ Then visit `http://localhost:3000/<key>` in a browser.
 ```sh
 deno task build
 deno task start
+```
+
+`server.ts` is the entrypoint: it serves the built client assets from
+`build/client/assets` and delegates every other request to the React Router
+production build in `build/server/index.js`. `deno task build` must run first so
+those artifacts exist.
+
+## Deno Deploy
+
+`server.ts` is the deploy entrypoint. Deno Deploy provides its own managed Deno
+KV, so leave `DENO_KV_PATH` unset there — `Deno.openKv()` falls back to the
+hosted store automatically.
+
+1. Push the repo to GitHub and create a new project at
+   [dash.deno.com](https://dash.deno.com) linked to it.
+2. Configure the build settings:
+   - **Install step:** `deno install` (optional; tasks use `--node-modules-dir=auto`).
+   - **Build step:** `deno task build`
+   - **Entrypoint:** `server.ts`
+3. Add the environment variables under **Settings → Environment Variables**:
+   - `BUBBLES_SECRET` and `BUBBLES_PRIVATE_KEY` (required).
+   - `OCTOCASH_URL`, `MAINNET_RPC_URL`, and the per-chain `*_RPC_URL` overrides as needed.
+   - Do **not** set `DENO_KV_PATH` — the managed KV is used automatically.
+4. Deploy. Deno Deploy runs `server.ts`, which calls `Deno.serve` and binds to
+   the platform-provided port.
+
+To deploy from the CLI instead, build locally and use
+[`deployctl`](https://docs.deno.com/deploy/manual/deployctl/):
+
+```sh
+deno task build
+deployctl deploy --entrypoint server.ts
 ```
