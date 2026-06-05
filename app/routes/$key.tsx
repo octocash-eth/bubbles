@@ -2,12 +2,19 @@ import * as React from "react";
 import { redirect } from "react-router";
 
 import { Button } from "~/components/ui/button";
-import { Input } from "~/components/ui/input";
 import { Modal } from "~/components/ui/modal";
 import { getOctocashUrl } from "~/lib/env.server";
 import { getKey } from "~/lib/kv.server";
+import { getMetaMaskInstallUrl } from "~/lib/utils";
 
 import type { Route } from "./+types/$key";
+
+// Preload the treasure-chest illustration so the throwing/delivered modal's
+// `<Chest />` paints instantly when a claim is thrown, rather than fetching the
+// SVG mid-animation.
+export const links: Route.LinksFunction = () => [
+  { rel: "preload", href: "/images/treasure-chest.svg", as: "image" },
+];
 
 export async function loader({ params }: Route.LoaderArgs) {
   const record = await getKey(params.key);
@@ -27,6 +34,20 @@ const THROWING_MIN_MS = 1500;
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Resolves the platform-appropriate MetaMask download link. Starts with the
+ * universal landing page so SSR and the first client render agree (avoiding a
+ * hydration mismatch), then narrows to the Play Store / App Store / Firefox
+ * add-on / Chrome Web Store once `navigator.userAgent` is available.
+ */
+function useMetaMaskInstallUrl(): string {
+  const [url, setUrl] = React.useState(() => getMetaMaskInstallUrl());
+  React.useEffect(() => {
+    setUrl(getMetaMaskInstallUrl(navigator.userAgent));
+  }, []);
+  return url;
 }
 
 /** A random ERC-20 delivered to the claimant via the Odos swap. */
@@ -125,6 +146,7 @@ export default function ClaimPage({ loaderData }: Route.ComponentProps) {
   const [address, setAddress] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [payouts, setPayouts] = React.useState<ApiPayout[] | null>(null);
+  const metamaskUrl = useMetaMaskInstallUrl();
 
   function goToOctocash() {
     window.location.assign(octocashUrl);
@@ -169,23 +191,35 @@ export default function ClaimPage({ loaderData }: Route.ComponentProps) {
     }
   }
 
-  return (
-    <div className="relative min-h-screen overflow-hidden bg-sky-blue-300">
-      <OceanScene />
+  const onAddressChange = (v: string) => {
+    setAddress(v);
+    if (error) setError(null);
+  };
 
-      <header className="relative z-10 flex items-center justify-center px-6 py-6">
+  return (
+    <div className="relative flex min-h-screen flex-col overflow-hidden bg-white">
+      <Backdrop />
+
+      <header className="relative z-10 flex items-center justify-center px-6 py-6 sm:px-10 sm:py-8 lg:justify-start lg:px-24">
         <Wordmark />
       </header>
 
-      <main className="relative z-10 mx-auto flex w-full max-w-md flex-col items-center px-6 pb-20 text-center">
-        <FormPanel
+      <main className="relative z-10 mx-auto flex w-full max-w-7xl flex-1 flex-col px-6 pb-8 sm:px-10 sm:pb-16 lg:px-24 lg:pb-24">
+        {/* Desktop: left-aligned hero with an inline "Claim" pill (Figma desktop). */}
+        <DesktopPanel
           address={address}
           error={error}
-          octocashUrl={octocashUrl}
-          onAddressChange={(v) => {
-            setAddress(v);
-            if (error) setError(null);
-          }}
+          metamaskUrl={metamaskUrl}
+          onAddressChange={onAddressChange}
+          onSubmit={handleSubmit}
+        />
+
+        {/* Mobile: centered hero, pirate illustration, stacked CTA (Figma mobile). */}
+        <MobilePanel
+          address={address}
+          error={error}
+          metamaskUrl={metamaskUrl}
+          onAddressChange={onAddressChange}
           onSubmit={handleSubmit}
         />
       </main>
@@ -208,78 +242,146 @@ export default function ClaimPage({ loaderData }: Route.ComponentProps) {
 
 function Wordmark() {
   return (
-    <span className="font-grotesque text-2xl font-bold lowercase tracking-tight">
+    <span className="font-grotesque text-2xl font-bold lowercase tracking-tight sm:text-3xl">
       <span className="text-pink-500">octo</span>
       <span className="text-violet-500">cash</span>
     </span>
   );
 }
 
-function Hero() {
-  return (
-    <>
-      <h1 className="font-grotesque text-4xl font-bold leading-[1.1] tracking-tight text-purple-500 sm:text-5xl">
-        Catch the tokens if you can
-      </h1>
-      <p className="mt-4 text-lg text-violet-500 sm:text-xl">Get yours and consolidate using Octocash.</p>
-      <img
-        src="/images/pirate-ship.png"
-        alt="A pirate monkey on a ship slinging Bitcoin, Ethereum and USDC coins"
-        className="mt-8 w-full max-w-sm select-none drop-shadow-xl"
-        draggable={false}
-      />
-    </>
-  );
-}
-
-function FormPanel({
-  address,
-  error,
-  octocashUrl,
-  onAddressChange,
-  onSubmit,
-}: {
+type PanelProps = {
   address: string;
   error: string | null;
-  octocashUrl: string;
+  metamaskUrl: string;
   onAddressChange: (v: string) => void;
   onSubmit: (e: React.FormEvent) => void;
-}) {
-  return (
-    <>
-      <Hero />
+};
 
-      <form onSubmit={onSubmit} className="mt-6 flex w-full max-w-sm flex-col items-center gap-6">
-        <div className="flex w-full flex-col items-center gap-2">
-          <Input
+/**
+ * Desktop hero (Figma "Octo Landing Page Desktop"): a left-aligned headline over
+ * the full-bleed pirate backdrop, with the address field and "Claim" button
+ * combined into a single rounded pill. Hidden below the `lg` breakpoint.
+ */
+function DesktopPanel({ address, error, metamaskUrl, onAddressChange, onSubmit }: PanelProps) {
+  return (
+    <div className="hidden flex-1 flex-col justify-center lg:flex">
+      <div className="max-w-[520px]">
+        <h1 className="font-grotesque text-[clamp(2.25rem,4.4vw,68px)] font-bold leading-[1.1] tracking-[0.01em]">
+          <span className="text-violet-500">You found some tokens</span>{" "}
+          <span className="text-purple-500">Bubbles dropped</span>
+        </h1>
+        <p className="mt-4 max-w-[460px] font-grotesque text-[clamp(1.25rem,2vw,32px)] leading-[1.15] tracking-[0.01em] text-violet-500">
+          Claim them and consolidate with Octocash
+        </p>
+      </div>
+
+      <form onSubmit={onSubmit} className="mt-10 max-w-[560px]">
+        <div className="flex items-center gap-4 rounded-full border border-violet-500 bg-white py-[20px] pr-[20px] pl-[30px] shadow-[0px_4px_16px_0px_rgba(0,0,0,0.25)] focus-within:ring-2 focus-within:ring-violet-500/30">
+          <input
             value={address}
             onChange={(e) => onAddressChange(e.target.value)}
-            placeholder="Paste your wallet address or Ens"
+            placeholder="Paste your address or ENS name"
             spellCheck={false}
             autoCapitalize="none"
             autoCorrect="off"
             autoComplete="off"
-            className="h-14 rounded-full border-violet-500 bg-white text-center text-base text-violet-500 shadow-xl placeholder:text-violet-200 focus-visible:border-violet-500 focus-visible:ring-violet-500/30"
+            aria-label="Wallet address or ENS"
             aria-invalid={error ? true : undefined}
+            className="min-w-0 flex-1 bg-transparent font-grotesque text-2xl text-violet-500 outline-none placeholder:text-violet-200"
           />
-          <p className="text-sm text-violet-500">We&apos;ll send tokens to this address</p>
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          <button
+            type="submit"
+            className="shrink-0 rounded-full border border-pink-200 bg-white px-9 py-3 font-medium text-pink-400 transition-colors hover:border-pink-400 hover:text-pink-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-300/50"
+          >
+            Claim
+          </button>
         </div>
 
-        <Button type="submit" size="lg" className="w-full">
+        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 pl-2 text-sm">
+          {error ? (
+            <p className="text-destructive">{error}</p>
+          ) : (
+            <p className="text-violet-500/70">We&apos;ll send tokens to this address</p>
+          )}
+          <p className="text-violet-500/70">
+            Don&apos;t have a wallet?{" "}
+            <a
+              href={metamaskUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-semibold text-pink-600 underline underline-offset-2 hover:text-pink-500"
+            >
+              Create one
+            </a>
+          </p>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/**
+ * Mobile hero (Figma "Bubbles" mobile): centered headline, the pirate
+ * illustration, then a stacked address field and full-width "Receive Tokens"
+ * button, a divider, and the "Create one" link. Shown below the `lg` breakpoint.
+ */
+function MobilePanel({ address, error, metamaskUrl, onAddressChange, onSubmit }: PanelProps) {
+  return (
+    <div className="mx-auto flex w-full max-w-sm flex-1 flex-col items-center text-center lg:hidden">
+      <h1 className="font-grotesque text-4xl font-bold leading-[1.2] tracking-[0.01em]">
+        <span className="text-violet-500">You found some tokens</span>{" "}
+        <span className="text-purple-500">Bubbles dropped</span>
+      </h1>
+      <p className="mt-2 text-xl leading-relaxed text-violet-500">Claim them and consolidate with Octocash</p>
+
+      {/* The pirate ship and bubble cluster are baked into the full-bleed backdrop
+          and sit around the vertical middle. This flexible gap reserves that band so
+          the form drops into the water below instead of overlapping the ship. */}
+      <div aria-hidden="true" className="min-h-60 flex-1" />
+
+      <form onSubmit={onSubmit} className="flex w-full flex-col items-center gap-6">
+        <div className="flex w-full flex-col items-center gap-2">
+          <input
+            value={address}
+            onChange={(e) => onAddressChange(e.target.value)}
+            placeholder="Paste your address or ENS name"
+            spellCheck={false}
+            autoCapitalize="none"
+            autoCorrect="off"
+            autoComplete="off"
+            aria-label="Wallet address or ENS"
+            aria-invalid={error ? true : undefined}
+            className="h-14 w-full rounded-full border border-violet-500 bg-white px-5 text-center text-base text-violet-500 shadow-xl outline-none placeholder:text-violet-200 focus-visible:ring-2 focus-visible:ring-violet-500/30"
+          />
+          {error ? (
+            <p className="text-sm text-destructive">{error}</p>
+          ) : (
+            <p className="text-sm text-violet-500">We&apos;ll send tokens to this address</p>
+          )}
+        </div>
+
+        <button
+          type="submit"
+          className="h-12 w-full rounded-full border-2 border-violet-500 bg-white font-medium text-pink-500 shadow-[3px_3px_0_0_var(--color-violet-500)] transition-colors hover:bg-pink-500 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 active:shadow-[inset_0_4px_4px_0_color-mix(in_srgb,var(--color-violet-500)_30%,transparent)]"
+        >
           Receive Tokens
-        </Button>
+        </button>
       </form>
 
-      <hr className="mt-12 w-full max-w-sm border-t border-violet-500/20" />
+      <hr className="mt-10 w-full border-t border-violet-500/20" />
 
-      <p className="mt-8 text-sm text-violet-500">
+      <p className="mt-6 text-sm text-violet-500">
         Don&apos;t have a wallet?{" "}
-        <a href={octocashUrl} className="font-semibold text-pink-600 underline underline-offset-2 hover:text-pink-500">
+        <a
+          href={metamaskUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-semibold text-pink-600 underline underline-offset-2 hover:text-pink-500"
+        >
           Create one
         </a>
       </p>
-    </>
+    </div>
   );
 }
 
@@ -394,60 +496,27 @@ function DeliveredDialog({ rows, onGo }: { rows: DeliveredRow[]; onGo: () => voi
   );
 }
 
-function OceanScene() {
-  // Decorative illustrated backdrop: a soft peach sky that melts into a
-  // sky-blue ocean, layered waves at the waterline, and rising bubbles.
-  const bubbles = [
-    { size: 14, left: "12%", bottom: "8%", delay: "0s", duration: "7s", opacity: 0.5 },
-    { size: 22, left: "82%", bottom: "14%", delay: "1.4s", duration: "9s", opacity: 0.4 },
-    { size: 10, left: "28%", bottom: "20%", delay: "2.2s", duration: "6s", opacity: 0.55 },
-    { size: 18, left: "68%", bottom: "5%", delay: "0.8s", duration: "8s", opacity: 0.45 },
-    { size: 12, left: "48%", bottom: "10%", delay: "3s", duration: "7.5s", opacity: 0.5 },
-  ];
-
+/**
+ * Full-bleed Figma "Bubbles" backdrop (gradient sky, bubble cluster and waves
+ * are all baked into the SVGs). The portrait `bg.svg` is the mobile artwork; the
+ * landscape `bg-big.svg` swaps in at the `lg` breakpoint — the same point the
+ * desktop hero appears — so the wide layout never gets the cropped portrait
+ * backdrop. A left-to-transparent white scrim keeps the desktop hero copy
+ * legible over the bubbles.
+ */
+function Backdrop() {
   return (
     <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
-      <div className="absolute inset-0 bg-[linear-gradient(180deg,#ffffff_0%,#ffe1d8_26%,#ffc6d4_42%,var(--color-sky-blue-300)_60%,var(--color-sky-blue-400)_100%)]" />
-
-      <svg className="absolute inset-x-0 top-[48%] h-48 w-full" viewBox="0 0 1440 200" preserveAspectRatio="none">
-        <path
-          d="M0,70 C240,130 480,20 720,56 C960,92 1200,24 1440,72 L1440,200 L0,200 Z"
-          fill="var(--color-sky-blue-300)"
-          opacity="0.95"
+      <picture className="contents">
+        <source srcSet="/images/bg-big.svg" media="(min-width: 1024px)" />
+        <img
+          src="/images/bg.svg"
+          alt=""
+          draggable={false}
+          className="size-full select-none object-cover object-center"
         />
-        <path
-          d="M0,110 C300,52 540,140 840,98 C1080,64 1260,132 1440,104 L1440,200 L0,200 Z"
-          fill="var(--color-sky-blue-400)"
-          opacity="0.85"
-        />
-        <path
-          d="M0,150 C260,110 520,170 780,140 C1040,110 1240,168 1440,148 L1440,200 L0,200 Z"
-          fill="var(--color-sky-blue-500)"
-          opacity="0.75"
-        />
-      </svg>
-
-      {bubbles.map((b, i) => (
-        <span
-          key={i}
-          className="absolute rounded-full bg-white"
-          style={{
-            width: b.size,
-            height: b.size,
-            left: b.left,
-            bottom: b.bottom,
-            opacity: b.opacity,
-            animation: `ocean-bubble ${b.duration} ease-in-out ${b.delay} infinite alternate`,
-          }}
-        />
-      ))}
-
-      <style>{`
-        @keyframes ocean-bubble {
-          0%   { transform: translateY(0)    scale(1);    }
-          100% { transform: translateY(-26px) scale(1.08); }
-        }
-      `}</style>
+      </picture>
+      <div className="absolute inset-0 hidden bg-linear-to-r from-white/70 via-white/25 to-transparent lg:block" />
     </div>
   );
 }

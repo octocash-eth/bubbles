@@ -73,8 +73,6 @@
     U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
-@custom-variant dark (&:is(.dark *));
-
 @theme {
   --font-sans:
     "DM Sans", ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
@@ -141,10 +139,7 @@
 html,
 body {
   @apply bg-background;
-
-  @media (prefers-color-scheme: dark) {
-    color-scheme: dark;
-  }
+  color-scheme: light;
 }
 
 @theme inline {
@@ -220,41 +215,6 @@ body {
   --button-link-foreground: var(--color-violet-500);
   --button-link-hover-foreground: var(--color-pink-500);
   --button-link-active-foreground: var(--color-pink-700);
-}
-
-.dark {
-  --background: var(--color-violet-700);
-  --foreground: var(--color-white);
-  --card: var(--color-violet-800);
-  --card-foreground: var(--color-white);
-  --popover: var(--color-violet-800);
-  --popover-foreground: var(--color-white);
-  --primary: var(--color-pink-500);
-  --primary-foreground: var(--color-violet-800);
-  --secondary: var(--color-purple-500);
-  --secondary-foreground: var(--color-white);
-  --muted: var(--color-violet-700);
-  --muted-foreground: var(--color-purple-100);
-  --accent: var(--color-violet-700);
-  --accent-foreground: var(--color-pink-500);
-  --destructive: var(--color-red-500);
-  --destructive-foreground: var(--color-white);
-  --destructive-shadow: var(--color-red-900);
-  --destructive-hover: var(--color-red-600);
-  --destructive-hover-foreground: var(--color-white);
-  --border: var(--color-violet-500);
-  --input: var(--color-violet-300);
-  --ring: var(--color-pink-500);
-  --shadow-button: 3px 3px 0 0 var(--color-pink-500);
-  --shadow-button-active: inset 0 4px 4px 0 color-mix(in srgb, var(--color-purple-900) 70%, transparent);
-  --shadow-button-destructive: 3px 3px 0 0 var(--color-destructive-shadow);
-  --color-button-primary: var(--color-violet-500);
-  --color-button-primary-foreground: var(--color-pink-500);
-  --color-button-secondary-foreground: var(--color-white);
-  --color-border-button: var(--color-pink-500);
-  --button-link-foreground: var(--color-purple-100);
-  --button-link-hover-foreground: var(--color-pink-500);
-  --button-link-active-foreground: var(--color-pink-400);
 }
 
 @layer base {

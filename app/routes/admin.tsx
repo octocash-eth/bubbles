@@ -1,6 +1,5 @@
 import { Form, redirect, useNavigation } from "react-router";
 import { formatEther } from "viem";
-import { ThemeToggle } from "~/components/theme";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { FundTreasury } from "~/components/wallet/fund-treasury";
@@ -122,7 +121,6 @@ function Shell({ children }: { children: React.ReactNode }) {
             admin
           </span>
         </span>
-        <ThemeToggle variant="ghost" />
       </header>
       <main className="relative z-10 mx-auto max-w-5xl px-6 pb-24">{children}</main>
     </div>
